@@ -2,7 +2,7 @@ from typing import Optional, List
 from sqlalchemy.orm import Session
 
 from . import models, schemas
-from .utils.security import hash_password
+from .utils.crypto import hash_password
 
 
 # ─── User operations ──────────────────────────────────────────────────────────
