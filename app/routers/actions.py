@@ -1,5 +1,5 @@
 from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Response
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
 from sqlalchemy.orm import Session
@@ -15,7 +15,6 @@ router = APIRouter(
 )
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
-
 
 def decode_access_token(token: str) -> schemas.TokenData:
     """
@@ -50,19 +49,24 @@ def get_current_user(token: str = Depends(oauth2_scheme)) -> schemas.TokenData:
 )
 def add_action(
     action: schemas.UserActionCreate,
+    response: Response,
     token_data: schemas.TokenData = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """
     Add a user action (like, watchlist, rating).
+    Creates a record on first time, updates on repeat to avoid UniqueViolation.
     """
-    # verify that the user exists
-    user = db.query(models.User).get(token_data.user_id)
+    user = db.get(models.User, token_data.user_id)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    # create the action record
-    db_act = crud.create_user_action(db, token_data.user_id, action)
+    # create-or-update to avoid UniqueViolation on repeated ratings
+    db_act, created = crud.create_or_update_user_action(db, token_data.user_id, action)
+
+    if not created:
+        response.status_code = status.HTTP_200_OK
+
     return db_act
 
 

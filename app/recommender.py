@@ -1,18 +1,14 @@
 from __future__ import annotations
-from typing import Dict, List
+from typing import Dict, List, Tuple
 import numpy as np
 import pandas as pd
 from sqlalchemy.orm import Session
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import linear_kernel
-from .models import Movie, UserMovieAction
+
+from .models import Movie, TvShow, UserMovieAction
 
 class ContentRecommender:
-    """
-    Контентный рекомендатель: TF-IDF по title+overview.
-    Профиль пользователя — взвешенная (по rating) сумма TF-IDF векторов просмотренных фильмов.
-    """
-
     _cached: "ContentRecommender | None" = None
 
     @classmethod
@@ -25,20 +21,33 @@ class ContentRecommender:
     def reset_cache(cls) -> None:
         cls._cached = None
 
-    # ---------------- internal ----------------
     def __init__(self, db: Session) -> None:
         self._build_matrix(db)
 
     def _build_matrix(self, db: Session) -> None:
-        movies = db.query(Movie).all()
-        self.df = pd.DataFrame({
-            "tmdb_id": [m.tmdb_movie_id for m in movies],
-            "text":    [f"{m.title or ''}. {m.overview or ''}" for m in movies],
-        })
-        if self.df.empty:
+        movies: List[Movie]  = db.query(Movie).all()
+        tvs:    List[TvShow] = db.query(TvShow).all()
+
+        rows: List[Tuple[str, int, str]] = []
+
+        for m in movies:
+            tmdb_id = int(m.tmdb_movie_id)
+            text = f"{m.title or ''}. {m.overview or ''}".strip()
+            rows.append(("movie", tmdb_id, text))
+
+        for t in tvs:
+            tmdb_id = int(t.tmdb_tv_id)
+            title = getattr(t, "name", None) or ""
+            text = f"{title}. {t.overview or ''}".strip()
+            rows.append(("tv", tmdb_id, text))
+
+        if not rows:
+            self.df = pd.DataFrame(columns=["media_type", "tmdb_id", "text"])
             self.mat = None
-            self.tmdb2idx = {}
+            self.tmdb2idx: Dict[Tuple[str, int], int] = {}
             return
+
+        self.df = pd.DataFrame(rows, columns=["media_type", "tmdb_id", "text"])
 
         self.vectorizer = TfidfVectorizer(
             stop_words="english",
@@ -46,20 +55,28 @@ class ContentRecommender:
             min_df=2,
             max_df=0.9,
         )
-        # scipy.sparse CSR matrix (n_movies x n_features)
         self.mat = self.vectorizer.fit_transform(self.df["text"])
-        self.tmdb2idx = {int(t): i for i, t in enumerate(self.df["tmdb_id"])}
+        self.tmdb2idx = {(row.media_type, int(row.tmdb_id)): i
+                         for i, row in self.df.iterrows()}
 
     def _user_profile(self, db: Session, user_id: int):
-        """Взвешенный (по rating) профиль пользователя как 1×F dense-вектор."""
         if self.mat is None:
             return None
 
         acts = db.query(UserMovieAction).filter(UserMovieAction.user_id == user_id).all()
         idxs: List[int] = []
         weights: List[float] = []
+
         for a in acts:
-            i = self.tmdb2idx.get(a.tmdb_movie_id)
+            key_movie = ("movie", a.tmdb_movie_id)
+            key_tv    = ("tv", a.tmdb_movie_id)
+
+            i = None
+            if key_movie in self.tmdb2idx:
+                i = self.tmdb2idx[key_movie]
+            elif key_tv in self.tmdb2idx:
+                i = self.tmdb2idx[key_tv]
+
             if i is not None:
                 idxs.append(i)
                 weights.append(float(a.rating or 1.0))
@@ -67,7 +84,7 @@ class ContentRecommender:
         if not idxs:
             return None
 
-        sub = self.mat[idxs]  # k × F sparse
+        sub = self.mat[idxs]
         w = np.asarray(weights, dtype=np.float32)
         s = w.sum()
         if s <= 0:
@@ -75,16 +92,24 @@ class ContentRecommender:
         else:
             w /= s
 
-        prof = sub.multiply(w[:, None]).sum(axis=0)  # -> numpy.matrix (1 × F)
-        prof = np.asarray(prof)                      # -> ndarray (1, F)
+        prof = sub.multiply(w[:, None]).sum(axis=0)
+        prof = np.asarray(prof)
         return prof
 
-    def cb_scores_for_user(self, db: Session, user_id: int) -> Dict[int, float]:
-        """Словарь {tmdb_id: score} по косинусной близости профиля к каждому фильму."""
-        if not getattr(self, "tmdb2idx", None) or self.mat is None or self.mat.shape[0] == 0:
+    def cb_scores_for_user(self, db: Session, user_id: int) -> Dict[Tuple[str, int], float]:
+        if self.mat is None or self.mat.shape[0] == 0:
             return {}
+
         prof = self._user_profile(db, user_id)
         if prof is None:
             return {}
-        sims = linear_kernel(prof, self.mat).ravel()  # (n_movies,)
-        return {int(self.df.loc[i, "tmdb_id"]): float(sims[i]) for i in range(self.mat.shape[0])}
+
+        sims = linear_kernel(prof, self.mat).ravel()
+        out: Dict[Tuple[str, int], float] = {}
+
+        for i in range(self.mat.shape[0]):
+            mt = self.df.iloc[i]["media_type"]
+            tmdb_id = int(self.df.iloc[i]["tmdb_id"])
+            out[(mt, tmdb_id)] = float(sims[i])
+
+        return out

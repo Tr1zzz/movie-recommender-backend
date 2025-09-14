@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Literal
 from pydantic import BaseModel, EmailStr
 
 # ───── User schemas ──────────────────────────────────────────────────────────
@@ -9,12 +9,8 @@ class UserBase(BaseModel):
     display_name: str
 
 class UserCreate(UserBase):
-    # Password is now optional (for Google login)
     password: Optional[str] = None
-    # Pass google_id when logging in via Google
     google_id: Optional[str] = None
-    # Role will always be set to "user" on the backend,
-    # but kept optional here if you ever need to override
     role: Optional[str] = None
 
 class User(UserBase):
@@ -55,3 +51,12 @@ class UserAction(UserActionBase):
     model_config = {
         "from_attributes": True,
     }
+
+# ───── Recommendation schemas ────────────────────────────────────────────────
+
+class RecommendationItem(BaseModel):
+    tmdb_id: int
+    media_type: Literal["movie", "tv"]
+    title: Optional[str] = None
+    poster_path: Optional[str] = None
+    score: Optional[float] = None

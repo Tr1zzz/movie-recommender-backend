@@ -9,7 +9,7 @@ Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="Movie Recommender API", version="1.0.0")
 
-# CORS для Angular
+# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:4200"],
@@ -20,11 +20,9 @@ app.add_middleware(
 
 @app.on_event("startup")
 def warmup():
-    # прогрев моделей, чтобы первая выдача не тормозила
     with SessionLocal() as db:
         get_recommender(db, _meta_key())
 
-# ВАЖНО: подключаем все роутеры, включая auth
-app.include_router(auth.router)             # ← без этого и был 404 на /auth/login
+app.include_router(auth.router)
 app.include_router(actions.router)
 app.include_router(recommendations.router)

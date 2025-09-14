@@ -1,4 +1,3 @@
-# app/utils/crypto.py
 from passlib.context import CryptContext
 
 _pwd = CryptContext(schemes=["bcrypt"], deprecated="auto")
